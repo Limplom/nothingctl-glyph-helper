@@ -1,21 +1,41 @@
 plugins {
-    id 'com.android.library'
+    id 'java'
 }
 
-android {
-    namespace 'com.nothingctl'
-    compileSdk 34
-    defaultConfig {
-        minSdk 29
-    }
-    compileOptions {
-        sourceCompatibility JavaVersion.VERSION_11
-        targetCompatibility JavaVersion.VERSION_11
-    }
+java {
+    sourceCompatibility = JavaVersion.VERSION_11
+    targetCompatibility = JavaVersion.VERSION_11
 }
+
+def androidHome = System.getenv('ANDROID_HOME') ?: System.getenv('ANDROID_SDK_ROOT') ?: ''
+def androidJar  = "${androidHome}/platforms/android-34/android.jar"
+def d8          = "${androidHome}/build-tools/34.0.0/d8"
+def dexOut      = "${buildDir}/outputs/dex"
 
 dependencies {
-    // Versions filled in after SDK research — see docs/plans/2026-04-10-glyph-helper.md Task 2
-    // compileOnly 'com.nothing.ketchum:glyph-sdk:PLACEHOLDER'
-    // compileOnly 'com.nothing.ketchum:glyphmatrix-sdk:PLACEHOLDER'
+    // android.jar provides IBinder, Parcel, SystemProperties, etc. at compile time only.
+    // At runtime these are supplied by the device's Android framework.
+    compileOnly files(androidJar)
 }
+
+/**
+ * Compile .class files → classes.dex via d8.
+ * Output: app/build/outputs/dex/classes.dex
+ */
+task buildDex(dependsOn: compileJava) {
+    inputs.dir  "${buildDir}/classes/java/main"
+    outputs.dir dexOut
+
+    doLast {
+        mkdir dexOut
+        def classes = fileTree("${buildDir}/classes/java/main").files
+                .collect { it.absolutePath }
+        exec {
+            commandLine(d8, '--release', '--min-api', '29', '--output', dexOut, *classes)
+        }
+        println "DEX written to: ${dexOut}/classes.dex"
+    }
+}
+
+// Alias: `gradle build` also produces the DEX
+build.dependsOn buildDex

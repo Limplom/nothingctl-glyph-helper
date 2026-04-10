@@ -2,7 +2,7 @@ package com.nothingctl;
 
 import android.os.IBinder;
 import android.os.Parcel;
-import android.os.ServiceManager;
+import java.lang.reflect.Method;
 
 /**
  * Controls Nothing Glyph LEDs via direct Binder transactions to the GlyphService.
@@ -35,9 +35,15 @@ public class ZoneController {
         this.zoneCount = zoneCount;
     }
 
-    /** Obtain the GlyphService Binder, register, and open a session. */
+    /** Obtain the GlyphService Binder via reflection, register, and open a session. */
     public void init() throws Exception {
-        binder = ServiceManager.getService(GLYPH_SERVICE_NAME);
+        try {
+            Class<?> smClass = Class.forName("android.os.ServiceManager");
+            Method getService = smClass.getMethod("getService", String.class);
+            binder = (IBinder) getService.invoke(null, GLYPH_SERVICE_NAME);
+        } catch (ReflectiveOperationException e) {
+            throw new Exception("ServiceManager reflection failed: " + e.getMessage(), e);
+        }
         if (binder == null) {
             throw new Exception(
                 "GlyphService Binder not found as '" + GLYPH_SERVICE_NAME + "'. " +

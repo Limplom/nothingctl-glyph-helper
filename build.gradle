@@ -1,17 +1,2 @@
-buildscript {
-    repositories {
-        google()
-        mavenCentral()
-    }
-    dependencies {
-        classpath 'com.android.tools.build:gradle:8.3.0'
-    }
-}
-
-allprojects {
-    repositories {
-        google()
-        mavenCentral()
-        maven { url 'https://jitpack.io' }
-    }
-}
+// Root build file — no Android Gradle Plugin needed.
+// The :app module uses the standard `java` plugin + a custom `buildDex` task.
