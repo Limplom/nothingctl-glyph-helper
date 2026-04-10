@@ -1,0 +1,2 @@
+rootProject.name = "nothingctl-glyph-helper"
+include ':app'
