@@ -13,9 +13,14 @@ import java.lang.reflect.Method;
  *   3 = closeSession()
  *   4 = register(String apiKey)
  *
- * The GlyphService must be running before init() is called. If not running,
- * start it first via: adb shell su -c 'am startservice -a
- * com.nothing.thirdparty.bind_glyphservice com.nothing.thirdparty/.GlyphService'
+ * GLYPH_SERVICE_NAME doubles as both the ServiceManager lookup key and the AIDL
+ * interface descriptor written by writeInterfaceToken(). Both must match the value
+ * declared in the GlyphService AIDL. Source: rec0de/glyph-api, verified against
+ * com.nothing.thirdparty package in the decompiled Nothing Hearthstone APK.
+ *
+ * The GlyphService must be running before init() is called. As root, start it with:
+ *   adb shell su -c 'am startservice -a \
+ *       com.nothing.thirdparty.bind_glyphservice com.nothing.thirdparty/.GlyphService'
  */
 public class ZoneController {
 
@@ -30,6 +35,7 @@ public class ZoneController {
 
     private final int zoneCount;
     private IBinder binder;
+    private boolean sessionOpen = false;
 
     public ZoneController(int zoneCount) {
         this.zoneCount = zoneCount;
@@ -52,6 +58,7 @@ public class ZoneController {
         }
         transactString(TRANSACTION_REGISTER, API_KEY);
         transactVoid(TRANSACTION_OPEN_SESSION);
+        sessionOpen = true;
     }
 
     /** Set all zones to the given brightness (0–4095). */
@@ -83,8 +90,9 @@ public class ZoneController {
 
     /** Close the session and release the Binder. */
     public void close() throws Exception {
-        if (binder != null) {
+        if (binder != null && sessionOpen) {
             transactVoid(TRANSACTION_CLOSE_SESSION);
+            sessionOpen = false;
             binder = null;
         }
     }

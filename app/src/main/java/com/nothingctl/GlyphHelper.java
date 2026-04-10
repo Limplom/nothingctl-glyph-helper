@@ -42,7 +42,7 @@ public class GlyphHelper {
             ctrl.init();
             switch (cmd) {
                 case "on": {
-                    int brightness = args.length > 1 ? Integer.parseInt(args[1]) : 4000;
+                    int brightness = parseIntArg(args, 1, 4000, "brightness");
                     ctrl.allOn(brightness);
                     break;
                 }
@@ -51,8 +51,8 @@ public class GlyphHelper {
                     break;
                 }
                 case "pulse": {
-                    int brightness = args.length > 1 ? Integer.parseInt(args[1]) : 4000;
-                    int steps      = args.length > 2 ? Integer.parseInt(args[2]) : 10;
+                    int brightness = parseIntArg(args, 1, 4000, "brightness");
+                    int steps      = parseIntArg(args, 2, 10,   "steps");
                     ctrl.pulse(brightness, steps);
                     break;
                 }
@@ -68,6 +68,18 @@ public class GlyphHelper {
             System.exit(1);
         }
         System.exit(0);
+    }
+
+    /** Parse args[index] as int, returning defaultVal if the argument is absent. */
+    private static int parseIntArg(String[] args, int index, int defaultVal, String name) {
+        if (args.length <= index) return defaultVal;
+        try {
+            return Integer.parseInt(args[index]);
+        } catch (NumberFormatException e) {
+            System.err.println("[ERROR] Invalid " + name + " '" + args[index] + "': must be an integer");
+            System.exit(1);
+            return defaultVal; // unreachable
+        }
     }
 
     private static void printUsage() {
