@@ -1,15 +1,15 @@
 package com.nothingctl;
 
-import android.os.SystemProperties;
+import android.os.Build;
 
 public class DeviceInfo {
 
     public static String codename() {
-        return SystemProperties.get("ro.product.device", "unknown").toLowerCase();
+        return Build.DEVICE.toLowerCase();
     }
 
     public static String model() {
-        return SystemProperties.get("ro.product.model", "unknown");
+        return Build.MODEL;
     }
 
     /**
