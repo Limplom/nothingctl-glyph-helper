@@ -1,5 +1,8 @@
 package com.nothingctl;
 
+import android.content.Context;
+import android.os.Looper;
+
 /**
  * Entry point for the nothingctl Glyph LED helper.
  *
@@ -12,8 +15,18 @@ package com.nothingctl;
  *   on [brightness]             — turn all zones on (default: 4000, range 0–4095)
  *   off                         — turn all zones off
  *   pulse [brightness] [steps]  — one sine-curve pulse cycle (default: 4000, 10 steps)
+ *
+ * Architecture note:
+ *   GlyphService is a bound service — not registered with ServiceManager.
+ *   bindService() requires a Context and a running Looper for its callbacks.
+ *   We initialise ActivityThread.systemMain() on the main thread (which also
+ *   prepares the main Looper), run the command logic on a worker thread, and
+ *   run Looper.loop() on the main thread to dispatch the ServiceConnection
+ *   callback back to ZoneController.
  */
 public class GlyphHelper {
+
+    private static volatile int exitCode = 0;
 
     public static void main(String[] args) {
         if (args.length == 0) {
@@ -21,9 +34,8 @@ public class GlyphHelper {
             System.exit(1);
         }
 
-        String cmd = args[0];
-
-        if (cmd.equals("info")) {
+        // "info" does not need a Binder connection — answer immediately.
+        if (args[0].equals("info")) {
             System.out.println("device="    + DeviceInfo.codename());
             System.out.println("model="     + DeviceInfo.model());
             System.out.println("zones="     + DeviceInfo.zoneCount());
@@ -31,16 +43,43 @@ public class GlyphHelper {
             System.exit(0);
         }
 
+        // Set up the main Looper (needed for bindService callbacks).
+        // ActivityThread.systemMain() calls Looper.prepareMainLooper() internally.
+        Context ctx = createContext();
+
+        final String[] mainArgs = args;
+        Thread worker = new Thread("glyph-worker", () -> {
+            try {
+                runCommand(ctx, mainArgs);
+            } catch (Exception e) {
+                String msg = e.getMessage();
+                System.err.println("[ERROR] " + (msg != null ? msg : e.toString()));
+                exitCode = 1;
+            } finally {
+                Looper.getMainLooper().quitSafely();
+            }
+        });
+        worker.setDaemon(false);
+        worker.start();
+
+        Looper.loop(); // blocks until worker calls quitSafely()
+
+        try { worker.join(); } catch (InterruptedException ignored) {}
+        System.exit(exitCode);
+    }
+
+    private static void runCommand(Context ctx, String[] args) throws Exception {
         if (!DeviceInfo.isSupported()) {
             System.err.println("[WARN] Device not supported: "
                     + DeviceInfo.codename() + " / " + DeviceInfo.model());
-            System.exit(2);
+            exitCode = 2;
+            return;
         }
 
         ZoneController ctrl = new ZoneController(DeviceInfo.zoneCount());
         try {
-            ctrl.init();
-            switch (cmd) {
+            ctrl.init(ctx);
+            switch (args[0]) {
                 case "on": {
                     int brightness = parseIntArg(args, 1, 4000, "brightness");
                     ctrl.allOn(brightness);
@@ -57,17 +96,25 @@ public class GlyphHelper {
                     break;
                 }
                 default:
-                    System.err.println("[ERROR] Unknown command: " + cmd);
-                    ctrl.close();
-                    System.exit(1);
+                    System.err.println("[ERROR] Unknown command: " + args[0]);
+                    exitCode = 1;
             }
-            ctrl.close();
-        } catch (Exception e) {
-            System.err.println("[ERROR] " + e.getMessage());
-            try { ctrl.close(); } catch (Exception ignored) {}
-            System.exit(1);
+        } finally {
+            ctrl.close(ctx);
         }
-        System.exit(0);
+    }
+
+    /** Creates a Context by bootstrapping ActivityThread on the main thread. */
+    private static Context createContext() {
+        try {
+            Class<?> atClass = Class.forName("android.app.ActivityThread");
+            Object at = atClass.getMethod("systemMain").invoke(null);
+            return (Context) atClass.getMethod("getSystemContext").invoke(at);
+        } catch (Exception e) {
+            System.err.println("[ERROR] Failed to create Android context: " + e.getMessage());
+            System.exit(1);
+            return null; // unreachable
+        }
     }
 
     /** Parse args[index] as int, returning defaultVal if the argument is absent. */
@@ -77,8 +124,8 @@ public class GlyphHelper {
             return Integer.parseInt(args[index]);
         } catch (NumberFormatException e) {
             System.err.println("[ERROR] Invalid " + name + " '" + args[index] + "': must be an integer");
-            System.exit(1);
-            return defaultVal; // unreachable
+            exitCode = 1;
+            throw new RuntimeException(e);
         }
     }
 
