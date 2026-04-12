@@ -104,17 +104,45 @@ public class GlyphHelper {
         }
     }
 
-    /** Creates a Context by bootstrapping ActivityThread on the main thread. */
+    /**
+     * Creates a Context by bootstrapping ActivityThread on the main thread.
+     * Tries multiple strategies to handle different Android versions.
+     */
     private static Context createContext() {
+        // Strategy 1: ActivityThread.systemMain() + getSystemContext()
         try {
             Class<?> atClass = Class.forName("android.app.ActivityThread");
             Object at = atClass.getMethod("systemMain").invoke(null);
-            return (Context) atClass.getMethod("getSystemContext").invoke(at);
-        } catch (Exception e) {
-            System.err.println("[ERROR] Failed to create Android context: " + e.getMessage());
-            System.exit(1);
-            return null; // unreachable
+            if (at != null) {
+                Context ctx = (Context) atClass.getMethod("getSystemContext").invoke(at);
+                if (ctx != null) return ctx;
+                System.err.println("[DEBUG] getSystemContext() returned null");
+            } else {
+                System.err.println("[DEBUG] systemMain() returned null");
+            }
+        } catch (Throwable t) {
+            Throwable cause = t.getCause() != null ? t.getCause() : t;
+            System.err.println("[DEBUG] systemMain strategy failed: "
+                    + cause.getClass().getName() + ": " + cause.getMessage());
         }
+
+        // Strategy 2: ContextImpl.getSystemContext() static method (Android 12+)
+        try {
+            Class<?> ciClass = Class.forName("android.app.ContextImpl");
+            java.lang.reflect.Method m = ciClass.getDeclaredMethod("getSystemContext");
+            m.setAccessible(true);
+            Context ctx = (Context) m.invoke(null);
+            if (ctx != null) return ctx;
+        } catch (Throwable t) {
+            Throwable cause = t.getCause() != null ? t.getCause() : t;
+            System.err.println("[DEBUG] ContextImpl.getSystemContext() failed: "
+                    + cause.getClass().getName() + ": " + cause.getMessage());
+        }
+
+        System.err.println("[ERROR] Could not create Android context — "
+                + "bindService() is unavailable from this process");
+        System.exit(1);
+        return null; // unreachable
     }
 
     /** Parse args[index] as int, returning defaultVal if the argument is absent. */
