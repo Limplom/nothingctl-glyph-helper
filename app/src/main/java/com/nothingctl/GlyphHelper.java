@@ -16,13 +16,15 @@ import android.os.Looper;
  *   off                         — turn all zones off
  *   pulse [brightness] [steps]  — one sine-curve pulse cycle (default: 4000, 10 steps)
  *
- * Architecture note:
- *   GlyphService is a bound service — not registered with ServiceManager.
- *   bindService() requires a Context and a running Looper for its callbacks.
- *   We initialise ActivityThread.systemMain() on the main thread (which also
- *   prepares the main Looper), run the command logic on a worker thread, and
- *   run Looper.loop() on the main thread to dispatch the ServiceConnection
- *   callback back to ZoneController.
+ * LED control strategy (tried in order):
+ *   1. Sysfs: writes directly to /sys/class/leds/noth_leds/brightness.
+ *      Works on Phone (3a Lite / galaxian) and potentially other newer devices.
+ *      Requires root (run via su) but needs no Android Context or Looper.
+ *
+ *   2. GlyphService Binder (fallback): binds to com.nothing.thirdparty.GlyphService.
+ *      Requires a Context obtained via ActivityThread.systemMain() and a running Looper.
+ *      Looper.prepareMainLooper() must be called before systemMain() in app_process
+ *      since the Looper is not auto-prepared in this execution context.
  */
 public class GlyphHelper {
 
@@ -34,7 +36,7 @@ public class GlyphHelper {
             System.exit(1);
         }
 
-        // "info" does not need a Binder connection — answer immediately.
+        // "info" does not need any LED connection — answer immediately.
         if (args[0].equals("info")) {
             System.out.println("device="    + DeviceInfo.codename());
             System.out.println("model="     + DeviceInfo.model());
@@ -43,19 +45,41 @@ public class GlyphHelper {
             System.exit(0);
         }
 
-        // Set up the main Looper (needed for bindService callbacks).
-        // ActivityThread.systemMain() calls Looper.prepareMainLooper() internally.
+        if (!DeviceInfo.isSupported()) {
+            System.err.println("[WARN] Device not supported: "
+                    + DeviceInfo.codename() + " / " + DeviceInfo.model());
+            System.exit(2);
+        }
+
+        ZoneController ctrl = new ZoneController(DeviceInfo.zoneCount());
+
+        // Strategy 1: sysfs — no Context or Looper needed.
+        if (ctrl.initSysfs()) {
+            try {
+                runCommand(ctrl, args);
+            } catch (Exception e) {
+                System.err.println("[ERROR] " + describeError(e));
+                System.exit(1);
+            } finally {
+                ctrl.close(null);
+            }
+            System.exit(0);
+        }
+
+        // Strategy 2: GlyphService Binder.
+        // Requires ActivityThread + Looper on the main thread.
         Context ctx = createContext();
 
         final String[] mainArgs = args;
         Thread worker = new Thread(() -> {
             try {
-                runCommand(ctx, mainArgs);
+                ctrl.initBinder(ctx);
+                runCommand(ctrl, mainArgs);
             } catch (Exception e) {
-                String msg = e.getMessage();
-                System.err.println("[ERROR] " + (msg != null ? msg : e.toString()));
+                System.err.println("[ERROR] " + describeError(e));
                 exitCode = 1;
             } finally {
+                ctrl.close(ctx);
                 Looper.getMainLooper().quitSafely();
             }
         }, "glyph-worker");
@@ -68,56 +92,42 @@ public class GlyphHelper {
         System.exit(exitCode);
     }
 
-    private static void runCommand(Context ctx, String[] args) throws Exception {
-        if (!DeviceInfo.isSupported()) {
-            System.err.println("[WARN] Device not supported: "
-                    + DeviceInfo.codename() + " / " + DeviceInfo.model());
-            exitCode = 2;
-            return;
-        }
-
-        ZoneController ctrl = new ZoneController(DeviceInfo.zoneCount());
-        try {
-            ctrl.init(ctx);
-            switch (args[0]) {
-                case "on": {
-                    int brightness = parseIntArg(args, 1, 4000, "brightness");
-                    ctrl.allOn(brightness);
-                    break;
-                }
-                case "off": {
-                    ctrl.allOff();
-                    break;
-                }
-                case "pulse": {
-                    int brightness = parseIntArg(args, 1, 4000, "brightness");
-                    int steps      = parseIntArg(args, 2, 10,   "steps");
-                    ctrl.pulse(brightness, steps);
-                    break;
-                }
-                default:
-                    System.err.println("[ERROR] Unknown command: " + args[0]);
-                    exitCode = 1;
+    private static void runCommand(ZoneController ctrl, String[] args) throws Exception {
+        switch (args[0]) {
+            case "on": {
+                int brightness = parseIntArg(args, 1, 4000, "brightness");
+                ctrl.allOn(brightness);
+                break;
             }
-        } finally {
-            ctrl.close(ctx);
+            case "off": {
+                ctrl.allOff();
+                break;
+            }
+            case "pulse": {
+                int brightness = parseIntArg(args, 1, 4000, "brightness");
+                int steps      = parseIntArg(args, 2, 10,   "steps");
+                ctrl.pulse(brightness, steps);
+                break;
+            }
+            default:
+                System.err.println("[ERROR] Unknown command: " + args[0]);
+                exitCode = 1;
         }
     }
 
     /**
      * Creates a Context by bootstrapping ActivityThread on the main thread.
-     * Tries multiple strategies to handle different Android versions.
+     *
+     * Looper.prepareMainLooper() must be called first: ActivityThread.systemMain()
+     * creates a Handler internally which requires a prepared Looper. In app_process
+     * the main Looper is never auto-prepared, so we prepare it explicitly here.
      */
     private static Context createContext() {
-        // Prepare the main Looper first.
-        // ActivityThread.systemMain() creates a Handler internally; if the main
-        // Looper hasn't been prepared it throws "Can't create handler inside thread
-        // that has not called Looper.prepare()".  In app_process the Looper is never
-        // auto-prepared, so we must do it explicitly before calling systemMain().
+        // Prepare the main Looper first — ActivityThread.systemMain() creates Handlers.
         try {
             Looper.prepareMainLooper();
         } catch (IllegalStateException ignored) {
-            // Already prepared — fine, continue.
+            // Already prepared — that's fine.
         }
 
         // Strategy 1: ActivityThread.systemMain() + getSystemContext()
@@ -144,7 +154,7 @@ public class GlyphHelper {
         } catch (Throwable ignored) {}
 
         System.err.println("[ERROR] Could not create Android context — "
-                + "bindService() is unavailable from this process");
+                + "GlyphService Binder path is unavailable from this process");
         System.exit(1);
         return null; // unreachable
     }
@@ -159,6 +169,11 @@ public class GlyphHelper {
             exitCode = 1;
             throw new RuntimeException(e);
         }
+    }
+
+    private static String describeError(Exception e) {
+        String msg = e.getMessage();
+        return msg != null ? msg : e.toString();
     }
 
     private static void printUsage() {

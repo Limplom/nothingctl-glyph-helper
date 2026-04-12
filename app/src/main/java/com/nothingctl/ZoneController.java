@@ -6,34 +6,46 @@ import android.content.Intent;
 import android.content.ServiceConnection;
 import android.os.IBinder;
 import android.os.Parcel;
+import java.io.FileWriter;
 import java.lang.reflect.Method;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Controls Nothing Glyph LEDs via direct Binder transactions to the GlyphService.
+ * Controls Nothing Glyph LEDs.
  *
- * Transaction codes from rec0de/glyph-api (https://github.com/rec0de/glyph-api):
- *   1 = setFrameColors(IntArray colors)
- *   2 = openSession()
- *   3 = closeSession()
- *   4 = register(String apiKey)
+ * Strategy (tried in order):
+ *   1. Sysfs LED class — writes directly to /sys/class/leds/noth_leds/brightness.
+ *      Works when running as root (app_process via su). No Android context needed.
+ *      Max brightness is 255; input values are scaled from the 0–4095 range.
  *
- * AIDL interface descriptor: "com.nothing.thirdparty.IGlyphService"
- * This value is used for both ServiceManager lookup AND writeInterfaceToken().
- * Both must match the descriptor in the service's AIDL definition.
- * Source: rec0de/glyph-api; cross-checked against com.nothing.thirdparty package.
- *
- * Binding: GlyphService is a bound service (not registered with ServiceManager).
- * init() uses bindService() with a 5 s timeout. The caller must ensure the main
- * Looper is running (via Looper.loop()) on the main thread, or the ServiceConnection
- * callback will never fire.
- *
- * Start the service first if needed:
- *   adb shell su -c 'am startservice -a
- *   com.nothing.thirdparty.bind_glyphservice com.nothing.thirdparty/.GlyphService'
+ *   2. GlyphService Binder (fallback) — direct Binder transactions to the bound
+ *      GlyphService. Requires a Context from ActivityThread + a running Looper.
+ *      Transaction codes from rec0de/glyph-api:
+ *        1 = setFrameColors(int[] colors)   2 = openSession()
+ *        3 = closeSession()                  4 = register(String apiKey)
+ *      AIDL descriptor: "com.nothing.thirdparty.IGlyphService"
  */
 public class ZoneController {
+
+    // -----------------------------------------------------------------------
+    // Sysfs
+    // -----------------------------------------------------------------------
+
+    // Candidate LED brightness files, tried in order.
+    private static final String[] SYSFS_CANDIDATES = {
+        "/sys/class/leds/noth_leds/brightness",
+    };
+
+    // Standard Linux LED class uses 0–255.  Our input range is 0–4095.
+    private static final int SYSFS_MAX = 255;
+    private static final int API_MAX   = 4095;
+
+    private String sysfsPath = null;  // non-null once sysfs init succeeds
+
+    // -----------------------------------------------------------------------
+    // Binder / GlyphService
+    // -----------------------------------------------------------------------
 
     private static final int TRANSACTION_SET_FRAME_COLORS = 1;
     private static final int TRANSACTION_OPEN_SESSION     = 2;
@@ -55,35 +67,52 @@ public class ZoneController {
         this.zoneCount = zoneCount;
     }
 
-    /**
-     * Obtain the GlyphService Binder, register, and open a session.
-     *
-     * Strategy:
-     *   1. Try ServiceManager (hidden API via reflection) — works if the service
-     *      happens to be registered there on some devices/ROMs.
-     *   2. Fall back to bindService() — the canonical path for bound services.
-     *      Requires ctx != null and the main Looper to be running.
-     */
-    public void init(Context ctx) throws Exception {
-        // 1. Try ServiceManager (may return null on most devices for bound services)
-        binder = tryServiceManager();
+    // -----------------------------------------------------------------------
+    // Public init API
+    // -----------------------------------------------------------------------
 
-        // 2. Fall back to bindService
+    /**
+     * Try sysfs LED control. Returns true if a writable LED file was found.
+     * No Android Context or Looper required.
+     */
+    public boolean initSysfs() {
+        for (String path : SYSFS_CANDIDATES) {
+            if (testSysfsWrite(path)) {
+                sysfsPath = path;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Fall back to GlyphService Binder. Requires ctx != null and the main
+     * Looper running on the main thread so bindService() callbacks fire.
+     */
+    public void initBinder(Context ctx) throws Exception {
+        binder = tryServiceManager();
         if (binder == null) {
             if (ctx == null) {
                 throw new Exception(
-                    "GlyphService not found in ServiceManager and no Context provided for bindService()");
+                    "GlyphService not in ServiceManager and no Context for bindService()");
             }
             binder = bindBlocking(ctx);
         }
-
         transactString(TRANSACTION_REGISTER, API_KEY);
         transactVoid(TRANSACTION_OPEN_SESSION);
         sessionOpen = true;
     }
 
+    // -----------------------------------------------------------------------
+    // Zone control
+    // -----------------------------------------------------------------------
+
     /** Set all zones to the given brightness (0–4095). */
     public void allOn(int brightness) throws Exception {
+        if (sysfsPath != null) {
+            writeSysfs(scale(brightness));
+            return;
+        }
         int[] colors = new int[zoneCount];
         for (int i = 0; i < zoneCount; i++) colors[i] = brightness;
         transactIntArray(TRANSACTION_SET_FRAME_COLORS, colors);
@@ -91,6 +120,10 @@ public class ZoneController {
 
     /** Turn all zones off. */
     public void allOff() throws Exception {
+        if (sysfsPath != null) {
+            writeSysfs(0);
+            return;
+        }
         transactIntArray(TRANSACTION_SET_FRAME_COLORS, new int[zoneCount]);
     }
 
@@ -101,9 +134,13 @@ public class ZoneController {
     public void pulse(int maxBrightness, int steps) throws Exception {
         int[] curve = buildSineCurve(maxBrightness, steps);
         for (int b : curve) {
-            int[] colors = new int[zoneCount];
-            for (int i = 0; i < zoneCount; i++) colors[i] = b;
-            transactIntArray(TRANSACTION_SET_FRAME_COLORS, colors);
+            if (sysfsPath != null) {
+                writeSysfs(scale(b));
+            } else {
+                int[] colors = new int[zoneCount];
+                for (int i = 0; i < zoneCount; i++) colors[i] = b;
+                transactIntArray(TRANSACTION_SET_FRAME_COLORS, colors);
+            }
             Thread.sleep(150);
         }
         allOff();
@@ -120,10 +157,41 @@ public class ZoneController {
             connection = null;
         }
         binder = null;
+        sysfsPath = null;
     }
 
     // -----------------------------------------------------------------------
-    // Binding helpers
+    // Sysfs helpers
+    // -----------------------------------------------------------------------
+
+    /** Scale brightness from [0, API_MAX] to [0, SYSFS_MAX]. */
+    private static int scale(int br) {
+        return Math.min(SYSFS_MAX, br * SYSFS_MAX / API_MAX);
+    }
+
+    private boolean testSysfsWrite(String path) {
+        try {
+            FileWriter fw = new FileWriter(path);
+            fw.write("0");
+            fw.close();
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private void writeSysfs(int value) throws Exception {
+        try {
+            FileWriter fw = new FileWriter(sysfsPath);
+            fw.write(Integer.toString(value));
+            fw.close();
+        } catch (Exception e) {
+            throw new Exception("sysfs write to " + sysfsPath + " failed: " + e.getMessage());
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Binder binding helpers
     // -----------------------------------------------------------------------
 
     /** Try to get the Binder via hidden ServiceManager API. Returns null if not found. */
