@@ -48,7 +48,7 @@ public class GlyphHelper {
         Context ctx = createContext();
 
         final String[] mainArgs = args;
-        Thread worker = new Thread("glyph-worker", () -> {
+        Thread worker = new Thread(() -> {
             try {
                 runCommand(ctx, mainArgs);
             } catch (Exception e) {
@@ -58,7 +58,7 @@ public class GlyphHelper {
             } finally {
                 Looper.getMainLooper().quitSafely();
             }
-        });
+        }, "glyph-worker");
         worker.setDaemon(false);
         worker.start();
 
