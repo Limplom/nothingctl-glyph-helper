@@ -126,6 +126,8 @@ public class ZoneController {
             }
 
             // Verify the extension responds: call getLights() (TX code 1).
+            // We only check that the transaction succeeds (no UNKNOWN_TRANSACTION),
+            // without parsing the full HwExtLight[] response.
             Parcel data  = Parcel.obtain();
             Parcel reply = Parcel.obtain();
             try {
@@ -135,9 +137,15 @@ public class ZoneController {
                     System.err.println("[DEBUG] getLights() transaction returned false");
                     return false;
                 }
-                reply.readException();
-                int lightCount = reply.readInt();
-                System.err.println("[DEBUG] ILightsExtension has " + lightCount + " lights");
+                // Read exception status but don't parse the result further.
+                int exceptionCode = reply.readInt();
+                if (exceptionCode != 0) {
+                    System.err.println("[DEBUG] getLights() returned exception code "
+                            + exceptionCode);
+                    return false;
+                }
+                System.err.println("[DEBUG] ILightsExtension connected (reply "
+                        + reply.dataAvail() + " bytes)");
             } finally {
                 data.recycle();
                 reply.recycle();
