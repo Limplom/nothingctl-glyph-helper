@@ -125,37 +125,13 @@ public class ZoneController {
                 System.err.println("[DEBUG] ILights/default has no vendor extension");
                 return false;
             }
-            System.err.println("[DEBUG] Got extension binder: " + ext.getClass().getName()
-                    + " iface=" + ext.getInterfaceDescriptor());
-
-            // Verify the extension responds: call getLights() (TX code 1).
-            Parcel data  = Parcel.obtain();
-            Parcel reply = Parcel.obtain();
-            try {
-                data.writeInterfaceToken(LIGHTS_EXT_DESCRIPTOR);
-                boolean ok = ext.transact(TX_EXT_GET_LIGHTS, data, reply, 0);
-                System.err.println("[DEBUG] getLights() transact returned " + ok
-                        + ", reply size=" + reply.dataSize());
-                if (!ok) {
-                    return false;
-                }
-                if (reply.dataSize() == 0) {
-                    System.err.println("[DEBUG] Empty reply — wrong TX code or descriptor?");
-                    return false;
-                }
-                // Try to read exception status if enough data.
-                if (reply.dataAvail() >= 4) {
-                    int exceptionCode = reply.readInt();
-                    if (exceptionCode != 0) {
-                        System.err.println("[DEBUG] Exception code " + exceptionCode);
-                        return false;
-                    }
-                }
-                System.err.println("[DEBUG] ILightsExtension connected OK");
-            } finally {
-                data.recycle();
-                reply.recycle();
+            // Verify the interface descriptor matches.
+            String iface = ext.getInterfaceDescriptor();
+            if (!LIGHTS_EXT_DESCRIPTOR.equals(iface)) {
+                System.err.println("[DEBUG] Extension descriptor mismatch: " + iface);
+                return false;
             }
+            System.err.println("[DEBUG] ILightsExtension binder acquired");
 
             lightsExtBinder = ext;
             return true;
@@ -311,8 +287,13 @@ public class ZoneController {
             data.writeInt(id);
             data.writeLong(state);
             data.writeInt(brightness);
-            lightsExtBinder.transact(TX_EXT_SET_EXT_STATE, data, reply, 0);
-            reply.readException();
+            boolean ok = lightsExtBinder.transact(TX_EXT_SET_EXT_STATE, data, reply, 0);
+            System.err.println("[DEBUG] extSetState(id=" + id + " state=0x"
+                    + Long.toHexString(state) + " br=" + brightness
+                    + ") ok=" + ok + " replySize=" + reply.dataSize());
+            if (reply.dataAvail() >= 4) {
+                reply.readException();
+            }
         } finally {
             data.recycle();
             reply.recycle();
