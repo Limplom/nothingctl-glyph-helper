@@ -115,6 +115,7 @@ public class ZoneController {
                 System.err.println("[DEBUG] ILights/default not in ServiceManager");
                 return false;
             }
+            System.err.println("[DEBUG] Got ILights binder: " + lightsBinder.getClass().getName());
 
             // IBinder.getExtension() — @hide API, available since API 30 (Android 11).
             // Must use reflection since it's not in the public SDK.
@@ -124,28 +125,33 @@ public class ZoneController {
                 System.err.println("[DEBUG] ILights/default has no vendor extension");
                 return false;
             }
+            System.err.println("[DEBUG] Got extension binder: " + ext.getClass().getName()
+                    + " iface=" + ext.getInterfaceDescriptor());
 
             // Verify the extension responds: call getLights() (TX code 1).
-            // We only check that the transaction succeeds (no UNKNOWN_TRANSACTION),
-            // without parsing the full HwExtLight[] response.
             Parcel data  = Parcel.obtain();
             Parcel reply = Parcel.obtain();
             try {
                 data.writeInterfaceToken(LIGHTS_EXT_DESCRIPTOR);
                 boolean ok = ext.transact(TX_EXT_GET_LIGHTS, data, reply, 0);
+                System.err.println("[DEBUG] getLights() transact returned " + ok
+                        + ", reply size=" + reply.dataSize());
                 if (!ok) {
-                    System.err.println("[DEBUG] getLights() transaction returned false");
                     return false;
                 }
-                // Read exception status but don't parse the result further.
-                int exceptionCode = reply.readInt();
-                if (exceptionCode != 0) {
-                    System.err.println("[DEBUG] getLights() returned exception code "
-                            + exceptionCode);
+                if (reply.dataSize() == 0) {
+                    System.err.println("[DEBUG] Empty reply — wrong TX code or descriptor?");
                     return false;
                 }
-                System.err.println("[DEBUG] ILightsExtension connected (reply "
-                        + reply.dataAvail() + " bytes)");
+                // Try to read exception status if enough data.
+                if (reply.dataAvail() >= 4) {
+                    int exceptionCode = reply.readInt();
+                    if (exceptionCode != 0) {
+                        System.err.println("[DEBUG] Exception code " + exceptionCode);
+                        return false;
+                    }
+                }
+                System.err.println("[DEBUG] ILightsExtension connected OK");
             } finally {
                 data.recycle();
                 reply.recycle();
@@ -155,6 +161,11 @@ public class ZoneController {
             return true;
         } catch (Exception e) {
             System.err.println("[DEBUG] ILightsExtension init failed: " + e.getMessage());
+            Throwable cause = e.getCause();
+            if (cause != null) {
+                System.err.println("[DEBUG]   cause: " + cause.getClass().getSimpleName()
+                        + ": " + cause.getMessage());
+            }
             return false;
         }
     }
