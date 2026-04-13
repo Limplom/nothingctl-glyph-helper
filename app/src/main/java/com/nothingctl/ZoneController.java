@@ -116,8 +116,10 @@ public class ZoneController {
                 return false;
             }
 
-            // IBinder.getExtension() — available since API 30 (Android 11).
-            IBinder ext = lightsBinder.getExtension();
+            // IBinder.getExtension() — @hide API, available since API 30 (Android 11).
+            // Must use reflection since it's not in the public SDK.
+            Method getExtension = IBinder.class.getMethod("getExtension");
+            IBinder ext = (IBinder) getExtension.invoke(lightsBinder);
             if (ext == null) {
                 System.err.println("[DEBUG] ILights/default has no vendor extension");
                 return false;
