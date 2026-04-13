@@ -265,13 +265,27 @@ public class ZoneController {
                 ? (0xFFL << 24) | (scaled << 16) | (scaled << 8) | scaled
                 : 0L;
 
-        for (int id : GLYPH_LIGHT_IDS) {
+        // Try first ID to detect correct transaction code.
+        int testId = GLYPH_LIGHT_IDS[0];
+        boolean success = false;
+        for (int txCode = TX_EXT_SET_EXT_STATE; !success && txCode <= TX_EXT_SET_EXT_STATE + 6; txCode++) {
             try {
-                extSetState(id, color, brightness);
+                extSetState(testId, color, brightness, txCode);
+                success = true;
+                System.err.println("[DEBUG] Working TX code: " + txCode);
+                // Set remaining IDs with this code.
+                for (int i = 1; i < GLYPH_LIGHT_IDS.length; i++) {
+                    try {
+                        extSetState(GLYPH_LIGHT_IDS[i], color, brightness, txCode);
+                    } catch (Exception ignored) {}
+                }
             } catch (Exception e) {
-                System.err.println("[DEBUG] setLightExtensionState(id=" + id + ") failed: "
-                        + e.getMessage());
+                System.err.println("[DEBUG] TX " + txCode + " failed: "
+                        + e.getClass().getSimpleName() + ": " + e.getMessage());
             }
+        }
+        if (!success) {
+            throw new Exception("No working TX code found for setLightExtensionState");
         }
     }
 
@@ -279,7 +293,7 @@ public class ZoneController {
      * Call setLightExtensionState(int id, long state, int brightness)
      * on the ILightsExtension binder.
      */
-    private void extSetState(int id, long state, int brightness) throws Exception {
+    private void extSetState(int id, long state, int brightness, int txCode) throws Exception {
         Parcel data  = Parcel.obtain();
         Parcel reply = Parcel.obtain();
         try {
@@ -287,10 +301,13 @@ public class ZoneController {
             data.writeInt(id);
             data.writeLong(state);
             data.writeInt(brightness);
-            boolean ok = lightsExtBinder.transact(TX_EXT_SET_EXT_STATE, data, reply, 0);
-            System.err.println("[DEBUG] extSetState(id=" + id + " state=0x"
-                    + Long.toHexString(state) + " br=" + brightness
-                    + ") ok=" + ok + " replySize=" + reply.dataSize());
+            boolean ok = lightsExtBinder.transact(txCode, data, reply, 0);
+            if (!ok) {
+                throw new Exception("transact returned false (UNKNOWN_TRANSACTION?)");
+            }
+            System.err.println("[DEBUG] extSetState(tx=" + txCode + " id=" + id
+                    + " state=0x" + Long.toHexString(state) + " br=" + brightness
+                    + ") replySize=" + reply.dataSize());
             if (reply.dataAvail() >= 4) {
                 reply.readException();
             }
