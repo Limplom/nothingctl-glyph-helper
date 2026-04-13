@@ -53,8 +53,9 @@ public class GlyphHelper {
 
         ZoneController ctrl = new ZoneController(DeviceInfo.zoneCount());
 
-        // Strategy 1: sysfs — no Context or Looper needed.
-        if (ctrl.initSysfs()) {
+        // Strategy 1: ILightsExtension — vendor HAL extension, no Context needed.
+        if (ctrl.initLightsExtension()) {
+            System.err.println("[INFO] Using ILightsExtension (vendor HAL)");
             try {
                 runCommand(ctrl, args);
             } catch (Exception e) {
@@ -66,7 +67,21 @@ public class GlyphHelper {
             System.exit(0);
         }
 
-        // Strategy 2: GlyphService Binder.
+        // Strategy 2: sysfs — no Context or Looper needed.
+        if (ctrl.initSysfs()) {
+            System.err.println("[INFO] Using sysfs (" + ctrl.getSysfsPath() + ")");
+            try {
+                runCommand(ctrl, args);
+            } catch (Exception e) {
+                System.err.println("[ERROR] " + describeError(e));
+                System.exit(1);
+            } finally {
+                ctrl.close(null);
+            }
+            System.exit(0);
+        }
+
+        // Strategy 3: GlyphService Binder.
         // Requires ActivityThread + Looper on the main thread.
         Context ctx = createContext();
 
