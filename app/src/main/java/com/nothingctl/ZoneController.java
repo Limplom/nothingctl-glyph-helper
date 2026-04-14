@@ -183,11 +183,15 @@ public class ZoneController {
     // -----------------------------------------------------------------------
 
     /**
-     * Diagnostic mode: run every probe variant individually with a 2 s pause
-     * between each, so the user can visually identify which variant physically
-     * lights the LEDs. Requires initLightsExtension() to have succeeded.
+     * Diagnostic mode: run every probe variant individually with a configurable
+     * pause between each, so the user can visually identify which variant
+     * physically lights the LEDs. Requires initLightsExtension() to succeed.
+     *
+     * Timeline: 3 s dark baseline → 7 variants × pauseMs → 3 s final turn-off.
+     * Default pauseMs is 5000 — long enough to read the log line, look at the
+     * phone's back, and confirm whether LEDs are illuminated.
      */
-    public void probeVariants(int brightness) throws Exception {
+    public void probeVariants(int brightness, int pauseMs) throws Exception {
         if (lightsExtBinder == null) {
             throw new Exception("ILightsExtension not initialised — cannot probe");
         }
@@ -198,42 +202,64 @@ public class ZoneController {
 
         int[] colors = new int[GLYPH_LIGHT_IDS.length];
         for (int i = 0; i < colors.length; i++) colors[i] = argbInt;
+        int[] off = new int[GLYPH_LIGHT_IDS.length]; // all zeros
 
-        // --- setLightFrame variants ---
+        // --- Baseline: ensure LEDs are dark before we start --------------------
+        System.err.println("\n>>> BASELINE: turning off — LEDs should be dark for 3 s");
+        attemptSetLightFrame(0, true, off, 0, "baseline-off-A");
+        attemptSetLightFrame(1, true, off, 0, "baseline-off-B");
+        Thread.sleep(3000);
+
+        System.err.println("[INFO] pause between variants: " + pauseMs + " ms");
+
+        // --- setLightFrame variants --------------------------------------------
         System.err.println("\n>>> PROBE 1/7: setLightFrame A (state=1, flag=true, 9 colors, extra=0)");
         attemptSetLightFrame(1, true, colors, 0, "probe-1");
-        Thread.sleep(2000);
+        Thread.sleep(pauseMs);
+        // Clear after each variant so next probe starts from dark.
+        attemptSetLightFrame(0, true, off, 0, "clear-after-1");
+        Thread.sleep(1000);
 
         System.err.println("\n>>> PROBE 2/7: setLightFrame B (state=br, flag=false, extra=br)");
         attemptSetLightFrame(brightness, false, colors, brightness, "probe-2");
-        Thread.sleep(2000);
+        Thread.sleep(pauseMs);
+        attemptSetLightFrame(0, true, off, 0, "clear-after-2");
+        Thread.sleep(1000);
 
         System.err.println("\n>>> PROBE 3/7: setLightFrame C (single color)");
         attemptSetLightFrame(1, true, new int[]{argbInt}, 0, "probe-3");
-        Thread.sleep(2000);
+        Thread.sleep(pauseMs);
+        attemptSetLightFrame(0, true, off, 0, "clear-after-3");
+        Thread.sleep(1000);
 
-        // --- setLightExtensionState variants (for every Glyph ID) ---
+        // --- setLightExtensionState variants (across all 9 Glyph IDs) ---------
         System.err.println("\n>>> PROBE 4/7: setExtState V1 (state=1, br=0-255) for all 9 zones");
         for (int id : GLYPH_LIGHT_IDS) attemptSetExtState(id, 1L, scaled, "probe-4 id=" + id);
-        Thread.sleep(2000);
+        Thread.sleep(pauseMs);
+        attemptSetLightFrame(0, true, off, 0, "clear-after-4");
+        Thread.sleep(1000);
 
         System.err.println("\n>>> PROBE 5/7: setExtState V2 (state=br 0-4095, br=0-4095) for all 9 zones");
         for (int id : GLYPH_LIGHT_IDS) attemptSetExtState(id, (long)brightness, brightness, "probe-5 id=" + id);
-        Thread.sleep(2000);
+        Thread.sleep(pauseMs);
+        attemptSetLightFrame(0, true, off, 0, "clear-after-5");
+        Thread.sleep(1000);
 
         System.err.println("\n>>> PROBE 6/7: setExtState V3 (state=ARGB, br=0-255) for all 9 zones");
         for (int id : GLYPH_LIGHT_IDS) attemptSetExtState(id, argbLong, scaled, "probe-6 id=" + id);
-        Thread.sleep(2000);
+        Thread.sleep(pauseMs);
+        attemptSetLightFrame(0, true, off, 0, "clear-after-6");
+        Thread.sleep(1000);
 
         System.err.println("\n>>> PROBE 7/7: setExtState V4 (state=0, br=0-4095) for all 9 zones");
         for (int id : GLYPH_LIGHT_IDS) attemptSetExtState(id, 0L, brightness, "probe-7 id=" + id);
-        Thread.sleep(2000);
+        Thread.sleep(pauseMs);
 
-        System.err.println("\n>>> PROBE complete — turning off");
-        // Explicit off via setLightFrame with zeros.
-        int[] off = new int[GLYPH_LIGHT_IDS.length];
-        attemptSetLightFrame(0, false, off, 0, "probe-off-frame");
-        for (int id : GLYPH_LIGHT_IDS) attemptSetExtState(id, 0L, 0, "probe-off id=" + id);
+        // --- Final explicit turn-off via the known-accepted variant-A shape ----
+        System.err.println("\n>>> PROBE complete — final turn-off via setLightFrame(0, true, [0×9], 0)");
+        attemptSetLightFrame(0, true, off, 0, "final-off");
+        Thread.sleep(3000);
+        System.err.println(">>> DONE — LEDs should now be off");
     }
 
     /** Set all zones to the given brightness (0–4095). */

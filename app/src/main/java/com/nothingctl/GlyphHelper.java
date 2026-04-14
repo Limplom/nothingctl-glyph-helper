@@ -125,10 +125,14 @@ public class GlyphHelper {
                 break;
             }
             case "probe": {
-                // Diagnostic: runs each ILightsExtension variant in turn with a 2 s pause
-                // between each, so the user can visually identify which one lights up LEDs.
+                // Diagnostic: runs each ILightsExtension variant in turn with a
+                // pause between each, so the user can visually identify which
+                // one lights up LEDs.
+                //   probe [brightness] [pause-ms]
+                //   defaults: brightness=4000, pause-ms=5000
                 int brightness = parseIntArg(args, 1, 4000, "brightness");
-                ctrl.probeVariants(brightness);
+                int pauseMs    = parseIntArg(args, 2, 5000, "pause-ms");
+                ctrl.probeVariants(brightness, pauseMs);
                 break;
             }
             default:
@@ -204,6 +208,6 @@ public class GlyphHelper {
         System.err.println("  on [brightness]             — all zones on (0–4095, default 4000)");
         System.err.println("  off                         — all zones off");
         System.err.println("  pulse [brightness] [steps]  — one pulse cycle (default 4000, 10 steps)");
-        System.err.println("  probe [brightness]          — diagnostic: run each vendor-HAL variant with 2 s pause");
+        System.err.println("  probe [brightness] [pause-ms] — diagnostic: walk each HAL variant (default 4000, 5000 ms)");
     }
 }
