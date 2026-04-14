@@ -182,6 +182,60 @@ public class ZoneController {
     // Zone control
     // -----------------------------------------------------------------------
 
+    /**
+     * Diagnostic mode: run every probe variant individually with a 2 s pause
+     * between each, so the user can visually identify which variant physically
+     * lights the LEDs. Requires initLightsExtension() to have succeeded.
+     */
+    public void probeVariants(int brightness) throws Exception {
+        if (lightsExtBinder == null) {
+            throw new Exception("ILightsExtension not initialised — cannot probe");
+        }
+
+        int scaled = brightness > 0 ? Math.max(1, brightness * 255 / API_MAX) : 0;
+        int argbInt = (0xFF << 24) | (scaled << 16) | (scaled << 8) | scaled;
+        long argbLong = (0xFFL << 24) | ((long)scaled << 16) | ((long)scaled << 8) | scaled;
+
+        int[] colors = new int[GLYPH_LIGHT_IDS.length];
+        for (int i = 0; i < colors.length; i++) colors[i] = argbInt;
+
+        // --- setLightFrame variants ---
+        System.err.println("\n>>> PROBE 1/7: setLightFrame A (state=1, flag=true, 9 colors, extra=0)");
+        attemptSetLightFrame(1, true, colors, 0, "probe-1");
+        Thread.sleep(2000);
+
+        System.err.println("\n>>> PROBE 2/7: setLightFrame B (state=br, flag=false, extra=br)");
+        attemptSetLightFrame(brightness, false, colors, brightness, "probe-2");
+        Thread.sleep(2000);
+
+        System.err.println("\n>>> PROBE 3/7: setLightFrame C (single color)");
+        attemptSetLightFrame(1, true, new int[]{argbInt}, 0, "probe-3");
+        Thread.sleep(2000);
+
+        // --- setLightExtensionState variants (for every Glyph ID) ---
+        System.err.println("\n>>> PROBE 4/7: setExtState V1 (state=1, br=0-255) for all 9 zones");
+        for (int id : GLYPH_LIGHT_IDS) attemptSetExtState(id, 1L, scaled, "probe-4 id=" + id);
+        Thread.sleep(2000);
+
+        System.err.println("\n>>> PROBE 5/7: setExtState V2 (state=br 0-4095, br=0-4095) for all 9 zones");
+        for (int id : GLYPH_LIGHT_IDS) attemptSetExtState(id, (long)brightness, brightness, "probe-5 id=" + id);
+        Thread.sleep(2000);
+
+        System.err.println("\n>>> PROBE 6/7: setExtState V3 (state=ARGB, br=0-255) for all 9 zones");
+        for (int id : GLYPH_LIGHT_IDS) attemptSetExtState(id, argbLong, scaled, "probe-6 id=" + id);
+        Thread.sleep(2000);
+
+        System.err.println("\n>>> PROBE 7/7: setExtState V4 (state=0, br=0-4095) for all 9 zones");
+        for (int id : GLYPH_LIGHT_IDS) attemptSetExtState(id, 0L, brightness, "probe-7 id=" + id);
+        Thread.sleep(2000);
+
+        System.err.println("\n>>> PROBE complete — turning off");
+        // Explicit off via setLightFrame with zeros.
+        int[] off = new int[GLYPH_LIGHT_IDS.length];
+        attemptSetLightFrame(0, false, off, 0, "probe-off-frame");
+        for (int id : GLYPH_LIGHT_IDS) attemptSetExtState(id, 0L, 0, "probe-off id=" + id);
+    }
+
     /** Set all zones to the given brightness (0–4095). */
     public void allOn(int brightness) throws Exception {
         if (lightsExtBinder != null) {
@@ -251,49 +305,137 @@ public class ZoneController {
     // -----------------------------------------------------------------------
 
     /**
-     * Set all known Glyph light IDs to the given brightness via
-     * setLightExtensionState(int id, long state, int brightness).
+     * Set all Glyph LEDs to the given brightness. Probes the vendor extension
+     * in priority order (setLightFrame first, then setLightExtensionState
+     * with multiple parameter variants) and logs reply bytes on success.
      *
-     * state is passed as the ARGB color with full alpha (0xFF000000 | brightness-scaled-to-RGB).
-     * brightness is passed directly (0–4095).
+     * The first variant that accepts our parcel without IllegalArgumentException
+     * is treated as "working" — but the user must verify LEDs physically illuminate.
      */
     private void setAllLightsExt(int brightness) throws Exception {
-        // Convert brightness (0–4095) to an ARGB white color (0xAARRGGBB).
-        // Scale to 0–255 for the RGB channels; alpha is always 0xFF when on.
-        int scaled = brightness > 0 ? Math.max(1, brightness * 255 / API_MAX) : 0;
-        long color = brightness > 0
-                ? (0xFFL << 24) | (scaled << 16) | (scaled << 8) | scaled
-                : 0L;
-
-        // Try first ID to detect correct transaction code.
-        int testId = GLYPH_LIGHT_IDS[0];
-        boolean success = false;
-        for (int txCode = TX_EXT_SET_EXT_STATE; !success && txCode <= TX_EXT_SET_EXT_STATE + 6; txCode++) {
-            try {
-                extSetState(testId, color, brightness, txCode);
-                success = true;
-                System.err.println("[DEBUG] Working TX code: " + txCode);
-                // Set remaining IDs with this code.
-                for (int i = 1; i < GLYPH_LIGHT_IDS.length; i++) {
-                    try {
-                        extSetState(GLYPH_LIGHT_IDS[i], color, brightness, txCode);
-                    } catch (Exception ignored) {}
-                }
-            } catch (Exception e) {
-                System.err.println("[DEBUG] TX " + txCode + " failed: "
-                        + e.getClass().getSimpleName() + ": " + e.getMessage());
-            }
+        // --- Try setLightFrame(int state, bool flag, int[] colors, int extra) ----
+        // setLightFrame is the most likely "paint all zones" method.
+        System.err.println("[PROBE] === setLightFrame (TX 7) ===");
+        if (trySetLightFrame(brightness)) {
+            return;
         }
-        if (!success) {
-            throw new Exception("No working TX code found for setLightExtensionState");
+
+        // --- Try setLightExtensionState(int id, long state, int brightness) -----
+        // Multiple value format variants — the IllegalArgumentException we saw
+        // previously was likely server-side value validation.
+        System.err.println("[PROBE] === setLightExtensionState (TX 6) variants ===");
+        if (trySetLightExtensionStateVariants(brightness)) {
+            return;
+        }
+
+        throw new Exception("All ILightsExtension probes failed — LEDs may require a different backend");
+    }
+
+    /**
+     * Try setLightFrame(int state, bool flag, int[] colors, int extra).
+     * Sends one int per zone, each zone's color = ARGB white scaled to brightness.
+     */
+    private boolean trySetLightFrame(int brightness) {
+        int scaled = brightness > 0 ? Math.max(1, brightness * 255 / API_MAX) : 0;
+        int color = brightness > 0
+                ? (0xFF << 24) | (scaled << 16) | (scaled << 8) | scaled
+                : 0;
+
+        int[] colors = new int[GLYPH_LIGHT_IDS.length];
+        for (int i = 0; i < colors.length; i++) colors[i] = color;
+
+        // Variant A: (state=1, flag=true, colors[9], extra=0)
+        if (attemptSetLightFrame(1, true, colors, 0, "A: state=1,flag=true")) return true;
+        // Variant B: (state=brightness, flag=false, colors[9], extra=brightness)
+        if (attemptSetLightFrame(brightness, false, colors, brightness, "B: state=br,flag=false,extra=br")) return true;
+        // Variant C: single-element color array (in case it expects one overall color)
+        int[] single = new int[]{color};
+        if (attemptSetLightFrame(1, true, single, 0, "C: single-color")) return true;
+
+        return false;
+    }
+
+    private boolean attemptSetLightFrame(int state, boolean flag, int[] colors, int extra, String label) {
+        Parcel data  = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(LIGHTS_EXT_DESCRIPTOR);
+            data.writeInt(state);
+            data.writeInt(flag ? 1 : 0);
+            data.writeIntArray(colors);
+            data.writeInt(extra);
+            boolean ok = lightsExtBinder.transact(TX_EXT_SET_LIGHT_FRAME, data, reply, 0);
+            if (!ok) {
+                System.err.println("[PROBE] setLightFrame " + label + ": transact=false");
+                return false;
+            }
+            System.err.println("[PROBE] setLightFrame " + label
+                    + ": replySize=" + reply.dataSize()
+                    + " reply=" + dumpReply(reply));
+            if (reply.dataAvail() >= 4) {
+                try {
+                    reply.readException();
+                } catch (Exception svcEx) {
+                    System.err.println("[PROBE]   server rejected: "
+                            + svcEx.getClass().getSimpleName() + ": " + svcEx.getMessage());
+                    return false;
+                }
+            }
+            System.err.println("[PROBE] setLightFrame " + label + ": ACCEPTED");
+            return true;
+        } catch (Exception e) {
+            System.err.println("[PROBE] setLightFrame " + label + ": "
+                    + e.getClass().getSimpleName() + ": " + e.getMessage());
+            return false;
+        } finally {
+            data.recycle();
+            reply.recycle();
         }
     }
 
     /**
-     * Call setLightExtensionState(int id, long state, int brightness)
-     * on the ILightsExtension binder.
+     * Try setLightExtensionState(int id, long state, int brightness) with
+     * multiple state/brightness value formats. The server previously rejected
+     * ARGB-encoded state with IllegalArgumentException, so we probe other
+     * likely encodings here.
      */
-    private void extSetState(int id, long state, int brightness, int txCode) throws Exception {
+    private boolean trySetLightExtensionStateVariants(int brightness) {
+        int id = GLYPH_LIGHT_IDS[0]; // probe with first zone
+        int scaled255 = brightness > 0 ? Math.max(1, brightness * 255 / API_MAX) : 0;
+        long argb = brightness > 0
+                ? (0xFFL << 24) | ((long)scaled255 << 16) | ((long)scaled255 << 8) | scaled255
+                : 0L;
+
+        // Variant 1: state=1 (simple on-flag), brightness=0-255
+        if (attemptSetExtState(id, brightness > 0 ? 1L : 0L, scaled255, "V1: state=on-flag,br=0-255")) {
+            applyToRemainingIds(brightness > 0 ? 1L : 0L, scaled255);
+            return true;
+        }
+        // Variant 2: state=brightness (0-4095), brightness=0-4095
+        if (attemptSetExtState(id, (long)brightness, brightness, "V2: state=br,br=0-4095")) {
+            applyToRemainingIds((long)brightness, brightness);
+            return true;
+        }
+        // Variant 3: state=ARGB, brightness=0-255 (instead of 0-4095)
+        if (attemptSetExtState(id, argb, scaled255, "V3: state=ARGB,br=0-255")) {
+            applyToRemainingIds(argb, scaled255);
+            return true;
+        }
+        // Variant 4: state=0 with brightness set (legacy HAL-style "off with level")
+        if (attemptSetExtState(id, 0L, brightness, "V4: state=0,br=0-4095")) {
+            applyToRemainingIds(0L, brightness);
+            return true;
+        }
+        return false;
+    }
+
+    private void applyToRemainingIds(long state, int brightness) {
+        for (int i = 1; i < GLYPH_LIGHT_IDS.length; i++) {
+            attemptSetExtState(GLYPH_LIGHT_IDS[i], state, brightness, "apply id=" + GLYPH_LIGHT_IDS[i]);
+        }
+    }
+
+    private boolean attemptSetExtState(int id, long state, int brightness, String label) {
         Parcel data  = Parcel.obtain();
         Parcel reply = Parcel.obtain();
         try {
@@ -301,20 +443,52 @@ public class ZoneController {
             data.writeInt(id);
             data.writeLong(state);
             data.writeInt(brightness);
-            boolean ok = lightsExtBinder.transact(txCode, data, reply, 0);
+            boolean ok = lightsExtBinder.transact(TX_EXT_SET_EXT_STATE, data, reply, 0);
             if (!ok) {
-                throw new Exception("transact returned false (UNKNOWN_TRANSACTION?)");
+                System.err.println("[PROBE] setExtState " + label + ": transact=false");
+                return false;
             }
-            System.err.println("[DEBUG] extSetState(tx=" + txCode + " id=" + id
-                    + " state=0x" + Long.toHexString(state) + " br=" + brightness
-                    + ") replySize=" + reply.dataSize());
+            System.err.println("[PROBE] setExtState " + label
+                    + " id=" + id + " state=0x" + Long.toHexString(state) + " br=" + brightness
+                    + " replySize=" + reply.dataSize()
+                    + " reply=" + dumpReply(reply));
             if (reply.dataAvail() >= 4) {
-                reply.readException();
+                try {
+                    reply.readException();
+                } catch (Exception svcEx) {
+                    System.err.println("[PROBE]   server rejected: "
+                            + svcEx.getClass().getSimpleName() + ": " + svcEx.getMessage());
+                    return false;
+                }
             }
+            System.err.println("[PROBE] setExtState " + label + ": ACCEPTED");
+            return true;
+        } catch (Exception e) {
+            System.err.println("[PROBE] setExtState " + label + ": "
+                    + e.getClass().getSimpleName() + ": " + e.getMessage());
+            return false;
         } finally {
             data.recycle();
             reply.recycle();
         }
+    }
+
+    /** Hex dump the first N bytes of a Parcel reply (after rewinding). */
+    private static String dumpReply(Parcel reply) {
+        int size = Math.min(reply.dataSize(), 64);
+        if (size <= 0) return "(empty)";
+        int pos = reply.dataPosition();
+        reply.setDataPosition(0);
+        byte[] buf = reply.marshall();
+        reply.setDataPosition(pos);
+        StringBuilder sb = new StringBuilder();
+        int limit = Math.min(buf.length, 64);
+        for (int i = 0; i < limit; i++) {
+            sb.append(String.format("%02x", buf[i] & 0xFF));
+            if ((i & 3) == 3) sb.append(' ');
+        }
+        if (buf.length > limit) sb.append("...");
+        return sb.toString();
     }
 
     // -----------------------------------------------------------------------

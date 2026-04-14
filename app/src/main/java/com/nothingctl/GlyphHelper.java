@@ -124,6 +124,13 @@ public class GlyphHelper {
                 ctrl.pulse(brightness, steps);
                 break;
             }
+            case "probe": {
+                // Diagnostic: runs each ILightsExtension variant in turn with a 2 s pause
+                // between each, so the user can visually identify which one lights up LEDs.
+                int brightness = parseIntArg(args, 1, 4000, "brightness");
+                ctrl.probeVariants(brightness);
+                break;
+            }
             default:
                 System.err.println("[ERROR] Unknown command: " + args[0]);
                 exitCode = 1;
@@ -197,5 +204,6 @@ public class GlyphHelper {
         System.err.println("  on [brightness]             — all zones on (0–4095, default 4000)");
         System.err.println("  off                         — all zones off");
         System.err.println("  pulse [brightness] [steps]  — one pulse cycle (default 4000, 10 steps)");
+        System.err.println("  probe [brightness]          — diagnostic: run each vendor-HAL variant with 2 s pause");
     }
 }
